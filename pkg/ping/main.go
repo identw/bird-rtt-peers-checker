@@ -1,0 +1,115 @@
+package ping
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	probing "github.com/prometheus-community/pro-bing"
+)
+
+type Pinger struct {
+	IP string
+	PauseActive bool
+	PauseDuration time.Duration
+	PauseSince time.Time
+}
+
+type Result struct {
+	IP      string
+	Alive	  bool
+	Timestamp time.Time
+	Err       error
+	Reason    Reason
+}
+
+type Reason string
+
+const (
+	PacketLoss    Reason = "packet loss"
+	HighAvgRtt    Reason = "high average RTT"
+	HighMaxRtt    Reason = "high maximum RTT"
+	HighMinRtt    Reason = "high minimum RTT"
+	HighStdDevRtt Reason = "high RTT standard deviation"
+
+)
+
+func NewPinger(ip string) *Pinger {
+	return &Pinger{
+		IP: ip,
+		PauseActive: false,
+		PauseDuration: 0,
+		PauseSince: time.Time{},
+	}
+}
+
+
+func (p *Pinger) ping(ctx context.Context) (*probing.Statistics, error) {
+	pinger, err := probing.NewPinger(p.IP)
+	pinger.SetPrivileged(true)
+	if err != nil {
+		return nil, fmt.Errorf("create pinger: %w", err)
+	}
+	pinger.Count = 28
+	pinger.Interval = time.Second * 2
+	pinger.Timeout = time.Second * 58
+	err = pinger.RunWithContext(ctx) // Blocks until finished.
+	if err != nil {
+		return nil, fmt.Errorf("run ping: %w", err)
+	}
+	return pinger.Statistics(), nil
+}
+
+func (p *Pinger) checkHealth(stats *probing.Statistics) (bool, Reason) {
+	if stats.PacketLoss > 20.0 {
+		return false, PacketLoss
+	}
+	if stats.AvgRtt > (time.Millisecond * 200) {
+		return false, HighAvgRtt
+	}
+	if stats.MaxRtt > (time.Millisecond * 800) {
+		return false, HighMaxRtt
+	}
+	if stats.MinRtt > (time.Millisecond * 100) {
+		return false, HighMinRtt
+	}
+	if stats.StdDevRtt > (time.Millisecond * 80) {
+		return false, HighStdDevRtt
+	}
+	return true, ""
+}
+
+
+func (p *Pinger) Run(
+	ctx context.Context,
+	out chan<- Result,
+) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		
+		default:
+			alive := false
+			reason := Reason("")
+			stats, err := p.ping(ctx)
+			if err == nil {
+				alive, reason = p.checkHealth(stats)
+			} else {
+				time.Sleep(time.Second * 58)
+			}
+
+			select {
+			case out <- Result{
+				IP:        p.IP,
+				Timestamp: time.Now(),
+				Alive:     alive,
+				Err:       err,
+				Reason:    reason,
+			}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
+}

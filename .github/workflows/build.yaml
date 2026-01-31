@@ -1,0 +1,52 @@
+name: release
+concurrency:
+  group: release
+  cancel-in-progress: true
+on: 
+  push:
+    tags:
+      - 'v*'
+jobs:
+  build:
+    name: build_and_release
+    runs-on: ubuntu-latest
+    steps:
+      - name: clone
+        uses: actions/checkout@main
+      - name: Setup Go
+        uses: actions/setup-go@main
+        with:
+          go-version: '1.24'
+      - name: install depends
+        run: |
+          go mod download
+          mkdir artifacts
+      - name: build
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o artifacts/bird-rtt-peers-checker ./cmd/
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o artifacts/bird-rtt-peers-checker-arm64 ./cmd/
+      
+      - name: upload artifacts to cache
+        id: cache-artifacts
+        uses: actions/cache@main
+        with:
+          path: ./artifacts
+          key: artifacts
+  
+  release:
+    name: release
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+    - name: download cache-artifacts
+      uses: actions/cache/restore@main
+      with:
+        path: ./artifacts
+        key: artifacts
+
+    - name: ${{ github.ref_name }}
+      uses: softprops/action-gh-release@v2
+      with:
+        body: ''
+        files: |
+          ./artifacts/*
