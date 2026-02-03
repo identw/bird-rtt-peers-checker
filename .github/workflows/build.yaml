@@ -43,10 +43,21 @@ jobs:
       with:
         path: ./artifacts
         key: artifacts
+    - name: md5sums
+      id: md5sums
+      run: |
+        cd artifacts
+        md5sum ./* > md5sums.txt
+        echo "md5sums=$(cat md5sums.txt)" >> $GITHUB_OUTPUT
+        cd ..
 
     - name: ${{ github.ref_name }}
       uses: softprops/action-gh-release@v2
       with:
-        body: ''
+        body: |
+          md5sums:
+          ```
+          ${{ steps.md5sums.outputs.md5sums }}
+          ````
         files: |
           ./artifacts/*
