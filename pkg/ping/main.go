@@ -6,43 +6,33 @@ import (
 	"time"
 
 	probing "github.com/prometheus-community/pro-bing"
+
+	"github.com/identw/bird-rtt-keeper/pkg/types"
 )
 
 type Pinger struct {
-	IP string
-	PauseActive bool
+	IP            string
+	PauseActive   bool
 	PauseDuration time.Duration
-	PauseSince time.Time
+	PauseSince    time.Time
 }
-
-type Result struct {
-	IP      string
-	Alive	  bool
-	Timestamp time.Time
-	Err       error
-	Reason    Reason
-}
-
-type Reason string
 
 const (
-	PacketLoss    Reason = "packet loss"
-	HighAvgRtt    Reason = "high average RTT"
-	HighMaxRtt    Reason = "high maximum RTT"
-	HighMinRtt    Reason = "high minimum RTT"
-	HighStdDevRtt Reason = "high RTT standard deviation"
-
+	PacketLoss    types.Reason = "packet loss"
+	HighAvgRtt    types.Reason = "high average RTT"
+	HighMaxRtt    types.Reason = "high maximum RTT"
+	HighMinRtt    types.Reason = "high minimum RTT"
+	HighStdDevRtt types.Reason = "high RTT standard deviation"
 )
 
 func NewPinger(ip string) *Pinger {
 	return &Pinger{
-		IP: ip,
-		PauseActive: false,
+		IP:            ip,
+		PauseActive:   false,
 		PauseDuration: 0,
-		PauseSince: time.Time{},
+		PauseSince:    time.Time{},
 	}
 }
-
 
 func (p *Pinger) ping(ctx context.Context) (*probing.Statistics, error) {
 	pinger, err := probing.NewPinger(p.IP)
@@ -60,7 +50,7 @@ func (p *Pinger) ping(ctx context.Context) (*probing.Statistics, error) {
 	return pinger.Statistics(), nil
 }
 
-func (p *Pinger) checkHealth(stats *probing.Statistics) (bool, Reason) {
+func (p *Pinger) checkHealth(stats *probing.Statistics) (bool, types.Reason) {
 	if stats.PacketLoss > 20.0 {
 		return false, PacketLoss
 	}
@@ -79,19 +69,18 @@ func (p *Pinger) checkHealth(stats *probing.Statistics) (bool, Reason) {
 	return true, ""
 }
 
-
 func (p *Pinger) Run(
 	ctx context.Context,
-	out chan<- Result,
+	out chan<- types.Result,
 ) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		
+
 		default:
 			alive := false
-			reason := Reason("")
+			reason := types.Reason("")
 			stats, err := p.ping(ctx)
 			if err == nil {
 				alive, reason = p.checkHealth(stats)
@@ -100,12 +89,13 @@ func (p *Pinger) Run(
 			}
 
 			select {
-			case out <- Result{
+			case out <- types.Result{
 				IP:        p.IP,
 				Timestamp: time.Now(),
 				Alive:     alive,
 				Err:       err,
 				Reason:    reason,
+				Checker:   "ping",
 			}:
 			case <-ctx.Done():
 				return

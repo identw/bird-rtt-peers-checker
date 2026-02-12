@@ -1,11 +1,12 @@
 package bird
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
 	"log"
 	"regexp"
-	"bufio"
-	"bytes"
+
 	"github.com/identw/bird-rtt-keeper/pkg/birdsocket"
 )
 
@@ -14,8 +15,8 @@ var bgpPeerRegex *regexp.Regexp
 var stateRegex *regexp.Regexp
 
 type BgpPeer struct {
-	Name string
-	IP   string
+	Name  string
+	IP    string
 	State bool
 }
 
@@ -24,7 +25,6 @@ func init() {
 	stateRegex = regexp.MustCompile(`State:\s+UP`)
 	bgpPeerRegex = regexp.MustCompile(`^\s+([^\s]+)\s+BGP\s.*`)
 }
-
 
 type BirdClient struct {
 	socket *birdsocket.BirdSocket
@@ -93,7 +93,6 @@ func (c *BirdClient) DisableProtocol(peer string) error {
 	return nil
 }
 
-
 func (c *BirdClient) EnableProtocol(peer string) error {
 	c.socket.Connect()
 	defer c.socket.Close()
@@ -107,7 +106,7 @@ func (c *BirdClient) EnableProtocol(peer string) error {
 }
 
 func (c *BirdClient) ReadBgpPeers() ([]BgpPeer, error) {
-	
+
 	peers, err := c.GetProtocols()
 	if err != nil {
 		return nil, fmt.Errorf("get protocols: %w", err)
@@ -121,8 +120,8 @@ func (c *BirdClient) ReadBgpPeers() ([]BgpPeer, error) {
 			continue
 		}
 		bgpPeers = append(bgpPeers, BgpPeer{
-			Name: string(peer),
-			IP:   ip,
+			Name:  string(peer),
+			IP:    ip,
 			State: state,
 		})
 	}

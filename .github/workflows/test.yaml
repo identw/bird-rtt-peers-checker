@@ -20,7 +20,7 @@ jobs:
 
       - name: Build
         run: |
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o artifacts/bird-rtt-peers-checker ./cmd/
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o artifacts/bird-rtt-peers-checker ./cmd/
 
       - name: Test
         run: go test ./... -v -covermode=count
