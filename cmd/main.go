@@ -16,12 +16,24 @@ import (
 	"github.com/identw/bird-rtt-keeper/pkg/types"
 )
 
+var (
+	mode string
+	portsStr string
+	tcpcheckEnabled bool
+	tcpcheckEnforce bool
+)
+
 func main() {
-	var mode string
-	var portsStr string
+
 	flag.StringVar(&mode, "mode", "bird-rtt-checker", "Mode to run: 'bird-rtt-checker' or 'tcpcheck-server'")
 	flag.StringVar(&portsStr, "ports", tcpcheck.DefaultPortStr, "Comma-separated list of ports (e.g., 8080,8081,8082) for server mode")
+	flag.BoolVar(&tcpcheckEnabled, "tcpcheck", true, "Enable TCP check")
+	flag.BoolVar(&tcpcheckEnforce, "tcpcheck-enforce", false, "Enforce TCP check")
 	flag.Parse()
+
+	if tcpcheckEnforce && !tcpcheckEnabled {
+		log.Fatal("--tcpcheck-enforce requires --tcpcheck")
+	}
 
 	if mode == "tcpcheck-server" {
 		tcpcheck.Run(tcpcheck.GetPorts(portsStr))
@@ -62,16 +74,37 @@ func main() {
 
 	go func() {
 		for result := range results {
+			hp, ok := healthPeers[result.IP]
+			if !ok {
+				continue
+			}
+
 			if result.Err != nil {
-				log.Printf("Result for %s: error: %v", healthPeers[result.IP].BgpPeer.Name, result.Err)
+				log.Printf("Result for %s [%s]: error: %v", hp.BgpPeer.Name, result.Checker, result.Err)
 			}
-			if !result.Alive && result.Checker == "ping" {
-				healthPeers[result.IP].DisablePeer(result.Reason)
-			} else if result.Alive && result.Checker == "ping" {
-				healthPeers[result.IP].EnablePeer()
+
+			// Record result in the appropriate history
+			switch result.Checker {
+			case "ping":
+				// log.Printf("Ping check result for %s: alive: %v", healthPeers[result.IP].BgpPeer.Name, result.Alive)
+				hp.IcmpHistory.Record(result.Alive)
+			case "tcpcheck":
+				log.Printf("TCP check result for %s: alive: %v", healthPeers[result.IP].BgpPeer.Name, result.Alive)
+				if tcpcheckEnforce {
+					hp.TcpHistory.Record(result.Alive)
+				} else {
+					hp.TcpHistory.Record(true)
+				}
 			}
-			if result.Checker == "tcpcheck" {
-				log.Printf("TCP check result for %s: alive: %v, error: %v", healthPeers[result.IP].BgpPeer.Name, result.Alive, result.Err)
+
+			// Decide whether to disable or enable the peer based on combined state
+			icmpFailing := hp.IcmpHistory.FailedFewLastChecks()
+			tcpFailing := hp.TcpHistory.FailedFewLastChecks()
+
+			if icmpFailing || tcpFailing {
+				hp.DisablePeer(result.Reason)
+			} else if hp.IcmpHistory.LastCheckAlive() && hp.TcpHistory.LastCheckAlive() {
+				hp.EnablePeer()
 			}
 		}
 	}()
@@ -118,6 +151,7 @@ func syncBgpPeers(ctx context.Context, bc *bird.BirdClient, healthPeers map[stri
 
 		tcpCheckerCtx, tcpCheckerCancel := context.WithCancel(ctx)
 		tcpChecker := tcpcheck.NewTcpChecker(peer.IP)
+
 		healthPeers[peer.IP] = &HealthPeer{
 			Pinger:           pinger,
 			PingerCancel:     pingerCancel,
@@ -128,13 +162,19 @@ func syncBgpPeers(ctx context.Context, bc *bird.BirdClient, healthPeers map[stri
 			BirdClient:       bc,
 			PauseDuration:    0,
 			PauseSince:       time.Time{},
-			History: History{
-				Entries: make([]bool, 0, 10),
-				Size:    10,
+			IcmpHistory: History{
+				FailThreshold:    3,
+				SuccessThreshold: 8,
+			},
+			TcpHistory: History{
+				FailThreshold:    2,
+				SuccessThreshold: 4,
 			},
 		}
 		go healthPeers[peer.IP].Pinger.Run(pingerCtx, results)
-		go healthPeers[peer.IP].TcpChecker.Run(tcpCheckerCtx, results)
+		if tcpcheckEnabled {
+			go healthPeers[peer.IP].TcpChecker.Run(tcpCheckerCtx, results)
+		}
 	}
 
 	return nil
@@ -150,13 +190,13 @@ type HealthPeer struct {
 	EnabledPeer      bool
 	PauseDuration    time.Duration
 	PauseSince       time.Time
-	History          History
+	IcmpHistory      History
+	TcpHistory       History
 }
 
 func (hp *HealthPeer) DisablePeer(reason types.Reason) {
-	hp.History.AddEntry(false)
 	hp.PauseSince = time.Now()
-	if !hp.EnabledPeer || !hp.History.FailedFewLastChecks() {
+	if !hp.EnabledPeer {
 		return
 	}
 	hp.EnabledPeer = false
@@ -172,10 +212,9 @@ func (hp *HealthPeer) DisablePeer(reason types.Reason) {
 }
 
 func (hp *HealthPeer) EnablePeer() {
-	hp.History.AddEntry(true)
 	now := time.Now()
 	if !hp.EnabledPeer && (now.Sub(hp.PauseSince) < hp.PauseDuration) {
-		log.Printf("	peer %s, PauseDuration: %v, PauseSince: %s, Pause left (%v)", hp.BgpPeer.Name, hp.PauseDuration, hp.PauseSince.Format(time.RFC3339), hp.PauseDuration-time.Since(hp.PauseSince))
+		log.Printf("\tpeer %s, PauseDuration: %v, PauseSince: %s, Pause left (%v)", hp.BgpPeer.Name, hp.PauseDuration, hp.PauseSince.Format(time.RFC3339), hp.PauseDuration-time.Since(hp.PauseSince))
 		return
 	}
 
@@ -185,41 +224,45 @@ func (hp *HealthPeer) EnablePeer() {
 		hp.BirdClient.EnableProtocol(hp.BgpPeer.Name)
 	}
 
-	if now.Sub(hp.PauseSince) >= time.Minute*45 && hp.History.SuccessChecks() {
+	if now.Sub(hp.PauseSince) >= time.Minute*45 && hp.IcmpHistory.SuccessChecks() && hp.TcpHistory.SuccessChecks() {
 		hp.PauseDuration = 0
 	}
 }
 
 type History struct {
-	Entries []bool
-	Size    int
+	FailThreshold    int // consecutive failures needed to consider checks failing
+	SuccessThreshold int // consecutive successes needed to consider checks recovered
+	ConsecFails      int
+	ConsecSuccesses  int
+	HasData          bool
+	LastAlive        bool
 }
 
-func (h *History) AddEntry(en bool) {
-	if len(h.Entries) >= h.Size {
-		h.Entries = h.Entries[1:]
+func (h *History) Record(alive bool) {
+	h.HasData = true
+	h.LastAlive = alive
+	if alive {
+		h.ConsecSuccesses++
+		h.ConsecFails = 0
+	} else {
+		h.ConsecFails++
+		h.ConsecSuccesses = 0
 	}
-	h.Entries = append(h.Entries, en)
-}
-
-func (h *History) SuccessChecks() bool {
-	for i := len(h.Entries) - 1; i >= 0; i-- {
-		if !h.Entries[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func (h *History) FailedFewLastChecks() bool {
-	fails := 3
-	if len(h.Entries) < fails {
-		return false
+	return h.ConsecFails >= h.FailThreshold
+}
+
+func (h *History) SuccessChecks() bool {
+	return h.ConsecSuccesses >= h.SuccessThreshold
+}
+
+// LastCheckAlive returns true if the last check was successful,
+// or true if there is no data yet (no reason to block).
+func (h *History) LastCheckAlive() bool {
+	if !h.HasData {
+		return true
 	}
-	for i := len(h.Entries) - 1; i >= len(h.Entries)-fails; i-- {
-		if h.Entries[i] {
-			return false
-		}
-	}
-	return true
+	return h.LastAlive
 }

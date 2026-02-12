@@ -18,11 +18,11 @@ type Pinger struct {
 }
 
 const (
-	PacketLoss    types.Reason = "packet loss"
-	HighAvgRtt    types.Reason = "high average RTT"
-	HighMaxRtt    types.Reason = "high maximum RTT"
-	HighMinRtt    types.Reason = "high minimum RTT"
-	HighStdDevRtt types.Reason = "high RTT standard deviation"
+	PacketLoss    types.Reason = "[icmp check] packet loss"
+	HighAvgRtt    types.Reason = "[icmp check] high average RTT"
+	HighMaxRtt    types.Reason = "[icmp check] high maximum RTT"
+	HighMinRtt    types.Reason = "[icmp check] high minimum RTT"
+	HighStdDevRtt types.Reason = "[icmp check] high RTT standard deviation"
 )
 
 func NewPinger(ip string) *Pinger {

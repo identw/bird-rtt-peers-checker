@@ -38,14 +38,14 @@ type aggResult struct {
 }
 
 const (
-	HighErrorPercent types.Reason = "high error percentage"
-	LowAvgSpeed      types.Reason = "low average speed"
-	LowMaxSpeed      types.Reason = "low maximum speed"
-	LowMinSpeed      types.Reason = "low minimum speed"
-	HighStdDevSpeed  types.Reason = "high speed standard deviation"
+	HighErrorPercent types.Reason = "[tcp check] high error percentage"
+	LowAvgSpeed      types.Reason = "[tcp check] low average speed"
+	LowMaxSpeed      types.Reason = "[tcp check] low maximum speed"
+	LowMinSpeed      types.Reason = "[tcp check] low minimum speed"
+	HighStdDevSpeed  types.Reason = "[tcp check] high speed standard deviation"
 
 	MaxPercentErr     = 20.0
-	MaxAvgDuration    = time.Second * 10
+	MaxAvgDuration    = time.Second * 12
 	MaxDuration       = time.Second * 18
 	MinDuration       = time.Second * 12
 	MaxStdDevDuration = time.Second * 7
@@ -141,6 +141,7 @@ func (t *TcpChecker) tcpCheck(ctx context.Context, operation string) ([]testResu
 			throughput: throughput,
 			err:        testErr,
 		}
+		log.Printf("    Throughput(%s) for %s: %v (%.2f MB/s)\n", operation, t.IP, duration, throughput)
 
 		results = append(results, result)
 
@@ -148,7 +149,7 @@ func (t *TcpChecker) tcpCheck(ctx context.Context, operation string) ([]testResu
 			select {
 			case <-ctx.Done():
 				return results, ctx.Err()
-			case <-time.After(100 * time.Millisecond):
+			case <-time.After(300 * time.Millisecond):
 			}
 		}
 	}
@@ -184,10 +185,10 @@ func (t *TcpChecker) checkHealth(stats []testResult) (bool, types.Reason) {
 	if r.maxDuration > MaxDuration {
 		return false, LowMaxSpeed
 	}
-	if r.minDuration > (time.Second * 5) {
+	if r.minDuration > MinDuration {
 		return false, LowMinSpeed
 	}
-	if r.stdDevDuration > (time.Second * 5) {
+	if len(stats) >= 5 && r.stdDevDuration > MaxStdDevDuration {
 		return false, HighStdDevSpeed
 	}
 	return true, ""
@@ -197,7 +198,7 @@ func (t *TcpChecker) Run(
 	ctx context.Context,
 	out chan<- types.Result,
 ) {
-	jitter := time.Duration(30+rand.Intn(120)) * time.Second
+	jitter := time.Duration(30+rand.Intn(240)) * time.Second
 	select {
 	case <-ctx.Done():
 		return
@@ -241,7 +242,7 @@ func (t *TcpChecker) Run(
 				return
 			}
 
-			jitter = time.Duration(30+rand.Intn(180)) * time.Second
+			jitter = time.Duration(30+rand.Intn(240)) * time.Second
 			timer := time.NewTimer(5*time.Minute + jitter)
 			select {
 			case <-ctx.Done():
