@@ -89,7 +89,9 @@ func main() {
 				// log.Printf("Ping check result for %s: alive: %v", healthPeers[result.IP].BgpPeer.Name, result.Alive)
 				hp.IcmpHistory.Record(result.Alive)
 			case "tcpcheck":
-				log.Printf("TCP check result for %s: alive: %v", healthPeers[result.IP].BgpPeer.Name, result.Alive)
+				if ! result.Alive {
+					log.Printf("TCP check result for %s: alive: %v, reason: %s", healthPeers[result.IP].BgpPeer.Name, result.Alive, result.Reason)
+				}
 				if tcpcheckEnforce {
 					hp.TcpHistory.Record(result.Alive)
 				} else {
