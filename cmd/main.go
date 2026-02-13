@@ -17,8 +17,8 @@ import (
 )
 
 var (
-	mode string
-	portsStr string
+	mode            string
+	portsStr        string
 	tcpcheckEnabled bool
 	tcpcheckEnforce bool
 )
