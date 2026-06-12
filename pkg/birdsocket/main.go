@@ -80,7 +80,7 @@ func (s *BirdSocket) Connect() ([]byte, error) {
 // Close closes the connection to the socket
 func (s *BirdSocket) Close() {
 	if s.conn != nil {
-		s.conn.Close()
+		_ = s.conn.Close()
 	}
 }
 

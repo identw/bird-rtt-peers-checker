@@ -107,7 +107,9 @@ func performDownload(conn net.Conn, size uint32) (time.Duration, error) {
 func performUpload(conn net.Conn, size uint32) (time.Duration, error) {
 	// Generate random data
 	data := make([]byte, size)
-	rand.Read(data)
+	if _, err := rand.Read(data); err != nil {
+		return 0, fmt.Errorf("generate random data: %w", err)
+	}
 
 	// Calculate hash
 	hash := sha256.Sum256(data)

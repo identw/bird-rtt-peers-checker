@@ -379,7 +379,9 @@ func (hp *HealthPeer) DisablePeer(reason types.Reason) {
 	hp.EnabledPeer = false
 	log.Printf("Disable BGP peer %s (%s), reason: %s", hp.BgpPeer.Name, hp.BgpPeer.IP, reason)
 	log.Printf("	peer %s, PauseDuration: %v, PauseSince: %s, Pause left (%v)", hp.BgpPeer.Name, hp.PauseDuration, hp.PauseSince.Format(time.RFC3339), hp.PauseDuration-time.Since(hp.PauseSince))
-	hp.BirdClient.DisableProtocol(hp.BgpPeer.Name)
+	if err := hp.BirdClient.DisableProtocol(hp.BgpPeer.Name); err != nil {
+		log.Printf("Error disabling BGP peer %s: %v", hp.BgpPeer.Name, err)
+	}
 
 	if hp.PauseDuration == 0 {
 		hp.PauseDuration = time.Second * 150
@@ -398,7 +400,9 @@ func (hp *HealthPeer) EnablePeer() {
 	if !hp.EnabledPeer {
 		hp.EnabledPeer = true
 		log.Printf("Enable BGP peer %s (%s)", hp.BgpPeer.Name, hp.BgpPeer.IP)
-		hp.BirdClient.EnableProtocol(hp.BgpPeer.Name)
+		if err := hp.BirdClient.EnableProtocol(hp.BgpPeer.Name); err != nil {
+			log.Printf("Error enabling BGP peer %s: %v", hp.BgpPeer.Name, err)
+		}
 	}
 
 	if now.Sub(hp.PauseSince) >= time.Minute*45 && hp.IcmpHistory.SuccessChecks() && hp.TcpHistory.SuccessChecks() {

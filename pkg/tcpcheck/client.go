@@ -110,13 +110,21 @@ func (t *TcpChecker) tcpCheck(ctx context.Context, operation string) ([]testResu
 		}
 
 		// close connection on context cancellation
-		go func() {
+		go func(c net.Conn) {
 			<-ctx.Done()
-			conn.Close()
-		}()
+			_ = c.Close()
+		}(conn)
 
-		// Set deadline for the entire operation
-		conn.SetDeadline(time.Now().Add(timeout))
+		if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+			results = append(results, testResult{
+				ip:      t.IP,
+				attempt: i,
+				success: false,
+				err:     fmt.Errorf("set deadline: %w", err),
+			})
+			_ = conn.Close()
+			continue
+		}
 
 		var testErr error
 		var duration time.Duration
@@ -130,7 +138,7 @@ func (t *TcpChecker) tcpCheck(ctx context.Context, operation string) ([]testResu
 			testErr = fmt.Errorf("unknown operation: %s", operation)
 		}
 
-		conn.Close()
+		_ = conn.Close()
 		throughput := float64(dataSize) / duration.Seconds() / 1024 / 1024
 
 		result := testResult{

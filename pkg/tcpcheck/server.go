@@ -39,7 +39,7 @@ func Run(ports []int) {
 
 // handleConnection handles an incoming TCP connection
 func handleConnection(conn net.Conn) {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	clientAddr := conn.RemoteAddr().String()
 	log.Printf("New connection from %s\n", clientAddr)
@@ -84,7 +84,10 @@ func handleDownload(conn net.Conn, reader *bufio.Reader, clientAddr string) {
 
 	// Generate random data
 	data := make([]byte, size)
-	rand.Read(data)
+	if _, err := rand.Read(data); err != nil {
+		log.Printf("Error generating random data for %s: %v\n", clientAddr, err)
+		return
+	}
 
 	// Calculate hash
 	hash := sha256.Sum256(data)
@@ -131,7 +134,9 @@ func handleUpload(conn net.Conn, reader *bufio.Reader, clientAddr string) {
 
 	if size > MaxDataSize {
 		log.Printf("Upload size %d exceeds maximum %d from %s\n", size, MaxDataSize, clientAddr)
-		conn.Write([]byte{0}) // Send failure
+		if _, err := conn.Write([]byte{0}); err != nil {
+			log.Printf("Error writing failure response to %s: %v\n", clientAddr, err)
+		}
 		return
 	}
 
@@ -187,7 +192,7 @@ func startServer(port int, wg *sync.WaitGroup) {
 		log.Printf("Failed to start server on port %d: %v\n", port, err)
 		return
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	log.Printf("Server started on port %d\n", port)
 

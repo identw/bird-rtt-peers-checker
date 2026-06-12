@@ -22,7 +22,9 @@ type BfdSession struct {
 // ReadBfdSessions returns BFD sessions from "show bfd sessions".
 // Returns an empty slice when no BFD protocol is running.
 func (c *BirdClient) ReadBfdSessions() ([]BfdSession, error) {
-	c.socket.Connect()
+	if _, err := c.socket.Connect(); err != nil {
+		return nil, fmt.Errorf("connect bird socket: %w", err)
+	}
 	defer c.socket.Close()
 
 	show, err := c.socket.Query("show bfd sessions")

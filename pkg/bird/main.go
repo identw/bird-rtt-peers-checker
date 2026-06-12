@@ -56,7 +56,9 @@ func parseBgpProtocolOutput(show []byte) (BgpPeer, error) {
 }
 
 func (c *BirdClient) GetBgpProtocol(peer string) (BgpPeer, error) {
-	c.socket.Connect()
+	if _, err := c.socket.Connect(); err != nil {
+		return BgpPeer{}, fmt.Errorf("connect bird socket: %w", err)
+	}
 	defer c.socket.Close()
 
 	show, err := c.socket.Query("show protocols all " + peer)
@@ -73,7 +75,9 @@ func (c *BirdClient) GetBgpProtocol(peer string) (BgpPeer, error) {
 }
 
 func (c *BirdClient) GetProtocols() ([]string, error) {
-	c.socket.Connect()
+	if _, err := c.socket.Connect(); err != nil {
+		return nil, fmt.Errorf("connect bird socket: %w", err)
+	}
 	defer c.socket.Close()
 
 	show, err := c.socket.Query("show protocols")
@@ -85,7 +89,7 @@ func (c *BirdClient) GetProtocols() ([]string, error) {
 
 	for scanner.Scan() {
 		match := bgpPeerRegex.FindSubmatch(scanner.Bytes())
-		if match != nil && len(match) > 1 {
+		if len(match) > 1 {
 			peers = append(peers, string(match[1]))
 		}
 	}
@@ -98,7 +102,9 @@ func (c *BirdClient) GetProtocols() ([]string, error) {
 }
 
 func (c *BirdClient) DisableProtocol(peer string) error {
-	c.socket.Connect()
+	if _, err := c.socket.Connect(); err != nil {
+		return fmt.Errorf("connect bird socket: %w", err)
+	}
 	defer c.socket.Close()
 
 	_, err := c.socket.Query("disable " + peer)
@@ -110,7 +116,9 @@ func (c *BirdClient) DisableProtocol(peer string) error {
 }
 
 func (c *BirdClient) EnableProtocol(peer string) error {
-	c.socket.Connect()
+	if _, err := c.socket.Connect(); err != nil {
+		return fmt.Errorf("connect bird socket: %w", err)
+	}
 	defer c.socket.Close()
 
 	_, err := c.socket.Query("enable " + peer)
