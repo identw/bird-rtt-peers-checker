@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/identw/bird-rtt-keeper/pkg/bird"
+	"github.com/identw/bird-rtt-keeper/pkg/metrics"
 	"github.com/identw/bird-rtt-keeper/pkg/ping"
 	"github.com/identw/bird-rtt-keeper/pkg/tcpcheck"
 	"github.com/identw/bird-rtt-keeper/pkg/types"
@@ -21,6 +22,8 @@ var (
 	portsStr        string
 	tcpcheckEnabled bool
 	tcpcheckEnforce bool
+	metricsEnabled  bool
+	metricsListen   string
 )
 
 func main() {
@@ -29,6 +32,8 @@ func main() {
 	flag.StringVar(&portsStr, "ports", tcpcheck.DefaultPortStr, "Comma-separated list of ports (e.g., 8080,8081,8082) for server mode")
 	flag.BoolVar(&tcpcheckEnabled, "tcpcheck", true, "Enable TCP check")
 	flag.BoolVar(&tcpcheckEnforce, "tcpcheck-enforce", false, "Enforce TCP check")
+	flag.BoolVar(&metricsEnabled, "metrics", true, "Enable Prometheus metrics exporter")
+	flag.StringVar(&metricsListen, "metrics-listen", metrics.DefaultListenAddr, "Prometheus metrics listen address")
 	flag.Parse()
 
 	if tcpcheckEnforce && !tcpcheckEnabled {
@@ -49,7 +54,14 @@ func main() {
 	results := make(chan types.Result, 100)
 	healthPeers := make(map[string]*HealthPeer)
 
-	err := syncBgpPeers(ctx, bc, healthPeers, results)
+	var exporter *metrics.Exporter
+	if metricsEnabled {
+		exporter = metrics.New(metricsListen)
+		exporter.SetConfig(tcpcheckEnabled, tcpcheckEnforce)
+		exporter.Start(ctx)
+	}
+
+	err := syncBgpPeers(ctx, bc, healthPeers, results, exporter)
 	if err != nil {
 		log.Printf("Error syncing BGP peers: %v", err)
 	}
@@ -61,7 +73,7 @@ func main() {
 		for {
 			select {
 			case <-ticker.C:
-				err = syncBgpPeers(ctx, bc, healthPeers, results)
+				err = syncBgpPeers(ctx, bc, healthPeers, results, exporter)
 				if err != nil {
 					log.Printf("Error syncing BGP peers: %v", err)
 				}
@@ -86,9 +98,28 @@ func main() {
 			// Record result in the appropriate history
 			switch result.Checker {
 			case "ping":
-				// log.Printf("Ping check result for %s: alive: %v", healthPeers[result.IP].BgpPeer.Name, result.Alive)
 				hp.IcmpHistory.Record(result.Alive)
+				if result.Icmp != nil {
+					hp.HasIcmpStats = true
+					hp.IcmpPacketLoss = result.Icmp.PacketLoss
+					hp.IcmpRttAvg = result.Icmp.AvgRtt.Seconds()
+					hp.IcmpRttMin = result.Icmp.MinRtt.Seconds()
+					hp.IcmpRttMax = result.Icmp.MaxRtt.Seconds()
+					hp.IcmpRttStdDev = result.Icmp.StdDevRtt.Seconds()
+				}
+				hp.IcmpLastCheck = result.Timestamp
 			case "tcpcheck":
+				hp.TcpActualAlive = result.Alive
+				hp.TcpActualHasData = true
+				hp.recordTcpActual(result.Alive)
+				if result.Tcp != nil {
+					hp.HasTcpStats = true
+					hp.TcpDurationAvg = result.Tcp.AvgDuration.Seconds()
+					hp.TcpDurationMin = result.Tcp.MinDuration.Seconds()
+					hp.TcpDurationMax = result.Tcp.MaxDuration.Seconds()
+					hp.TcpThroughputBytesPerSec = result.Tcp.ThroughputBytesPerSec
+				}
+				hp.TcpLastCheck = result.Timestamp
 				if !result.Alive {
 					log.Printf("TCP check result for %s: alive: %v, reason: %s", healthPeers[result.IP].BgpPeer.Name, result.Alive, result.Reason)
 				}
@@ -115,6 +146,10 @@ func main() {
 			} else if hp.IcmpHistory.LastCheckAlive() && hp.TcpHistory.LastCheckAlive() {
 				hp.EnablePeer()
 			}
+
+			if exporter != nil {
+				exporter.UpdatePeer(hp.metricsSnapshot(tcpcheckEnabled, tcpcheckEnforce))
+			}
 		}
 	}()
 
@@ -127,11 +162,18 @@ func main() {
 	log.Println("Done")
 }
 
-func syncBgpPeers(ctx context.Context, bc *bird.BirdClient, healthPeers map[string]*HealthPeer, results chan<- types.Result) error {
+func syncBgpPeers(ctx context.Context, bc *bird.BirdClient, healthPeers map[string]*HealthPeer, results chan<- types.Result, exporter *metrics.Exporter) error {
 	bgpPeers, err := bc.ReadBgpPeers()
 	if err != nil {
 		return fmt.Errorf("read BGP peers: %w", err)
 	}
+
+	bfdSessions, err := bc.ReadBfdSessions()
+	if err != nil {
+		log.Printf("Error reading BFD sessions: %v", err)
+	}
+	bfdByIP := bird.BfdSessionsByIP(bfdSessions)
+
 	var peerMaps = make(map[string]struct{})
 	for _, peer := range bgpPeers {
 		peerMaps[peer.IP] = struct{}{}
@@ -141,6 +183,9 @@ func syncBgpPeers(ctx context.Context, bc *bird.BirdClient, healthPeers map[stri
 	for ip, hp := range healthPeers {
 		if _, exists := peerMaps[ip]; !exists {
 			log.Printf("Removing BGP peer: %s (%s)", hp.BgpPeer.Name, hp.BgpPeer.IP)
+			if exporter != nil {
+				exporter.RemovePeer(hp.BgpPeer.Name, hp.BgpPeer.IP)
+			}
 			healthPeers[ip].PingerCancel()
 			healthPeers[ip].TcpCheckerCancel()
 			delete(healthPeers, ip)
@@ -148,9 +193,27 @@ func syncBgpPeers(ctx context.Context, bc *bird.BirdClient, healthPeers map[stri
 	}
 
 	for _, peer := range bgpPeers {
-		if _, exists := healthPeers[peer.IP]; exists {
-			if peer.State != healthPeers[peer.IP].EnabledPeer {
-				healthPeers[peer.IP].EnabledPeer = peer.State
+		if hp, exists := healthPeers[peer.IP]; exists {
+			if peer.State != hp.EnabledPeer {
+				hp.EnabledPeer = peer.State
+			}
+			hp.BgpPeer.Name = peer.Name
+			hp.BgpPeer.State = peer.State
+			hp.BgpPeer.PrefixesImported = peer.PrefixesImported
+			hp.BgpPeer.PrefixesExported = peer.PrefixesExported
+			if bfd, ok := bfdByIP[peer.IP]; ok {
+				hp.HasBfd = true
+				hp.BfdSessionUp = bfd.State
+				hp.BfdIntervalSeconds = bfd.Interval
+				hp.BfdTimeoutSeconds = bfd.Timeout
+			} else {
+				hp.HasBfd = false
+				hp.BfdSessionUp = false
+				hp.BfdIntervalSeconds = 0
+				hp.BfdTimeoutSeconds = 0
+			}
+			if exporter != nil {
+				exporter.UpdatePeer(hp.metricsSnapshot(tcpcheckEnabled, tcpcheckEnforce))
 			}
 			continue
 		}
@@ -161,7 +224,7 @@ func syncBgpPeers(ctx context.Context, bc *bird.BirdClient, healthPeers map[stri
 		tcpCheckerCtx, tcpCheckerCancel := context.WithCancel(ctx)
 		tcpChecker := tcpcheck.NewTcpChecker(peer.IP)
 
-		healthPeers[peer.IP] = &HealthPeer{
+		hp := &HealthPeer{
 			Pinger:           pinger,
 			PingerCancel:     pingerCancel,
 			TcpChecker:       tcpChecker,
@@ -180,9 +243,19 @@ func syncBgpPeers(ctx context.Context, bc *bird.BirdClient, healthPeers map[stri
 				SuccessThreshold: 4,
 			},
 		}
+		if bfd, ok := bfdByIP[peer.IP]; ok {
+			hp.HasBfd = true
+			hp.BfdSessionUp = bfd.State
+			hp.BfdIntervalSeconds = bfd.Interval
+			hp.BfdTimeoutSeconds = bfd.Timeout
+		}
+		healthPeers[peer.IP] = hp
 		go healthPeers[peer.IP].Pinger.Run(pingerCtx, results)
 		if tcpcheckEnabled {
 			go healthPeers[peer.IP].TcpChecker.Run(tcpCheckerCtx, results)
+		}
+		if exporter != nil {
+			exporter.UpdatePeer(hp.metricsSnapshot(tcpcheckEnabled, tcpcheckEnforce))
 		}
 	}
 
@@ -201,10 +274,105 @@ type HealthPeer struct {
 	PauseSince       time.Time
 	IcmpHistory      History
 	TcpHistory       History
+	TcpActualAlive   bool
+	TcpActualHasData bool
+	TcpConsecFails   int
+	TcpConsecSuccesses int
+	HasBfd           bool
+	BfdSessionUp     bool
+	BfdIntervalSeconds float64
+	BfdTimeoutSeconds  float64
+	LastDisableReason  string
+
+	HasIcmpStats   bool
+	IcmpPacketLoss float64
+	IcmpRttAvg     float64
+	IcmpRttMin     float64
+	IcmpRttMax     float64
+	IcmpRttStdDev  float64
+	IcmpLastCheck  time.Time
+
+	HasTcpStats              bool
+	TcpDurationAvg           float64
+	TcpDurationMin           float64
+	TcpDurationMax           float64
+	TcpThroughputBytesPerSec float64
+	TcpLastCheck             time.Time
+}
+
+func (hp *HealthPeer) metricsSnapshot(tcpCheckEnabled, tcpCheckEnforce bool) metrics.PeerSnapshot {
+	return metrics.PeerSnapshot{
+		Name:            hp.BgpPeer.Name,
+		IP:              hp.BgpPeer.IP,
+		IcmpAlive:       hp.IcmpHistory.LastCheckAlive(),
+		TcpActualAlive:  hp.lastTcpActualAlive(),
+		BgpSessionUp:    hp.BgpPeer.State,
+		BfdSessionUp:    hp.BfdSessionUp,
+		HasBfd:          hp.HasBfd,
+		TcpCheckEnabled: tcpCheckEnabled,
+		TcpCheckEnforce: tcpCheckEnforce,
+
+		PeerEnabled:           hp.EnabledPeer,
+		PauseRemainingSeconds: hp.pauseRemainingSeconds(),
+		IcmpConsecFails:       hp.IcmpHistory.ConsecFails,
+		IcmpConsecSuccesses:   hp.IcmpHistory.ConsecSuccesses,
+		TcpConsecFails:        hp.TcpConsecFails,
+		TcpConsecSuccesses:    hp.TcpConsecSuccesses,
+		LastDisableReason:     hp.LastDisableReason,
+
+		HasIcmpStats:   hp.HasIcmpStats,
+		IcmpPacketLoss: hp.IcmpPacketLoss,
+		IcmpRttAvg:     hp.IcmpRttAvg,
+		IcmpRttMin:     hp.IcmpRttMin,
+		IcmpRttMax:     hp.IcmpRttMax,
+		IcmpRttStdDev:  hp.IcmpRttStdDev,
+		IcmpLastCheck:  hp.IcmpLastCheck,
+
+		HasTcpStats:              hp.HasTcpStats,
+		TcpDurationAvg:           hp.TcpDurationAvg,
+		TcpDurationMin:           hp.TcpDurationMin,
+		TcpDurationMax:           hp.TcpDurationMax,
+		TcpThroughputBytesPerSec: hp.TcpThroughputBytesPerSec,
+		TcpLastCheck:             hp.TcpLastCheck,
+
+		BgpPrefixesImported: float64(hp.BgpPeer.PrefixesImported),
+		BgpPrefixesExported: float64(hp.BgpPeer.PrefixesExported),
+		BfdIntervalSeconds:  hp.BfdIntervalSeconds,
+		BfdTimeoutSeconds:   hp.BfdTimeoutSeconds,
+	}
+}
+
+func (hp *HealthPeer) pauseRemainingSeconds() float64 {
+	if hp.EnabledPeer || hp.PauseDuration == 0 {
+		return 0
+	}
+	remaining := hp.PauseDuration - time.Since(hp.PauseSince)
+	if remaining < 0 {
+		return 0
+	}
+	return remaining.Seconds()
+}
+
+func (hp *HealthPeer) recordTcpActual(alive bool) {
+	if alive {
+		hp.TcpConsecSuccesses++
+		hp.TcpConsecFails = 0
+	} else {
+		hp.TcpConsecFails++
+		hp.TcpConsecSuccesses = 0
+	}
+}
+
+func (hp *HealthPeer) lastTcpActualAlive() bool {
+	if !hp.TcpActualHasData {
+		return true
+	}
+	return hp.TcpActualAlive
 }
 
 func (hp *HealthPeer) DisablePeer(reason types.Reason) {
 	hp.PauseSince = time.Now()
+	hp.LastDisableReason = string(reason)
 	if !hp.EnabledPeer {
 		return
 	}
@@ -279,5 +447,5 @@ func (h *History) LastCheckAlive() bool {
 func (h *History) PrintStats(prefix string) {
 	log.Printf("%sHistory stats - FailThreshold: %d, SuccessThreshold: %d, ConsecFails: %d, ConsecSuccesses: %d, HasData: %v, LastAlive: %v",
 		prefix, h.FailThreshold, h.SuccessThreshold, h.ConsecFails, h.ConsecSuccesses, h.HasData, h.LastAlive)
-	
+
 }

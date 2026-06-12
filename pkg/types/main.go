@@ -11,6 +11,23 @@ type Result struct {
 	Err       error
 	Reason    Reason
 	Checker   string
+	Icmp      *IcmpStats
+	Tcp       *TcpStats
 }
 
 type Reason string
+
+type IcmpStats struct {
+	PacketLoss float64
+	AvgRtt     time.Duration
+	MinRtt     time.Duration
+	MaxRtt     time.Duration
+	StdDevRtt  time.Duration
+}
+
+type TcpStats struct {
+	AvgDuration           time.Duration
+	MinDuration           time.Duration
+	MaxDuration           time.Duration
+	ThroughputBytesPerSec float64
+}

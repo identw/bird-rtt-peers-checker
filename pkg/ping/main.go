@@ -81,9 +81,17 @@ func (p *Pinger) Run(
 		default:
 			alive := false
 			reason := types.Reason("")
+			var icmpStats *types.IcmpStats
 			stats, err := p.ping(ctx)
 			if err == nil {
 				alive, reason = p.checkHealth(stats)
+				icmpStats = &types.IcmpStats{
+					PacketLoss: stats.PacketLoss,
+					AvgRtt:     stats.AvgRtt,
+					MinRtt:     stats.MinRtt,
+					MaxRtt:     stats.MaxRtt,
+					StdDevRtt:  stats.StdDevRtt,
+				}
 			} else {
 				time.Sleep(time.Second * 58)
 			}
@@ -96,6 +104,7 @@ func (p *Pinger) Run(
 				Err:       err,
 				Reason:    reason,
 				Checker:   "ping",
+				Icmp:      icmpStats,
 			}:
 			case <-ctx.Done():
 				return

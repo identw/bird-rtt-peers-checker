@@ -1,57 +1,63 @@
 package main
 
-import (
-	"testing"
-)
+import "testing"
 
 func TestHistory_FailedFewLastChecks(t *testing.T) {
 	tests := []struct {
-		name     string
-		entries  []bool
-		expected bool
+		name          string
+		failThreshold int
+		entries       []bool
+		expected      bool
 	}{
 		{
-			name:     "History entries less than 3",
-			entries:  []bool{true, false},
-			expected: false,
+			name:          "fewer failures than threshold",
+			failThreshold: 3,
+			entries:       []bool{true, false, false},
+			expected:      false,
 		},
 		{
-			name:     "History entries equeal 3",
-			entries:  []bool{true, false, true},
-			expected: false,
+			name:          "exactly at threshold",
+			failThreshold: 3,
+			entries:       []bool{true, false, false, false},
+			expected:      true,
 		},
 		{
-			name:     "History last 3 entries(4) all false",
-			entries:  []bool{true, false, false, false},
-			expected: true,
+			name:          "failures mixed with successes",
+			failThreshold: 3,
+			entries:       []bool{false, true, true, false, true, false, true, false, true, false},
+			expected:      false,
 		},
 		{
-			name:     "History last 3 entries(4) not all false",
-			entries:  []bool{true, false, true, false},
-			expected: false,
-		},
-		{
-			name:     "History last 3 entries(10) not all false",
-			entries:  []bool{false, true, true, false, true, false, true, false, true, false},
-			expected: false,
-		},
-		{
-			name:     "History last 3 entries(10) all false",
-			entries:  []bool{false, true, true, false, true, false, true, false, false, false},
-			expected: true,
+			name:          "last failures reach threshold",
+			failThreshold: 3,
+			entries:       []bool{false, true, true, false, true, false, true, false, false, false},
+			expected:      true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			history := &History{
-				Entries: tt.entries,
-				Size:    len(tt.entries),
+			history := &History{FailThreshold: tt.failThreshold}
+			for _, alive := range tt.entries {
+				history.Record(alive)
 			}
 			result := history.FailedFewLastChecks()
 			if result != tt.expected {
 				t.Errorf("Expected %v, got %v", tt.expected, result)
 			}
 		})
+	}
+}
+
+func TestHealthPeer_lastTcpActualAlive(t *testing.T) {
+	hp := &HealthPeer{}
+	if !hp.lastTcpActualAlive() {
+		t.Fatal("expected true when no tcp data yet")
+	}
+
+	hp.TcpActualHasData = true
+	hp.TcpActualAlive = false
+	if hp.lastTcpActualAlive() {
+		t.Fatal("expected false when last tcp check failed")
 	}
 }

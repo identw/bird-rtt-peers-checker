@@ -35,6 +35,7 @@ type aggResult struct {
 	maxDuration    time.Duration
 	avgDuration    time.Duration
 	stdDevDuration time.Duration
+	avgThroughput  float64
 }
 
 const (
@@ -155,8 +156,35 @@ func (t *TcpChecker) tcpCheck(ctx context.Context, operation string) ([]testResu
 	return results, nil
 }
 
-func (t *TcpChecker) checkHealth(stats []testResult) (bool, types.Reason) {
+func (t *TcpChecker) checkHealth(stats []testResult) (bool, types.Reason, aggResult) {
+	r := aggregateResults(stats)
+
+	if r.percentErr > 20.0 {
+		return false, HighErrorPercent, r
+	}
+	if r.avgDuration > MaxAvgDuration {
+		return false, LowAvgSpeed, r
+	}
+	if r.maxDuration > MaxDuration {
+		return false, LowMaxSpeed, r
+	}
+	if r.minDuration > MinDuration {
+		return false, LowMinSpeed, r
+	}
+	if len(stats) >= 5 && r.stdDevDuration > MaxStdDevDuration {
+		return false, HighStdDevSpeed, r
+	}
+	return true, "", r
+}
+
+func aggregateResults(stats []testResult) aggResult {
 	r := aggResult{}
+	if len(stats) == 0 {
+		return r
+	}
+
+	var totalThroughput float64
+	var throughputCount int
 	for _, s := range stats {
 		if s.err != nil {
 			r.percentErr += 100.0 / float64(len(stats))
@@ -169,28 +197,18 @@ func (t *TcpChecker) checkHealth(stats []testResult) (bool, types.Reason) {
 			if s.duration > r.maxDuration {
 				r.maxDuration = s.duration
 			}
-			// Calculate standard deviation
 			diff := s.duration - r.avgDuration
 			r.stdDevDuration += diff * diff / time.Duration(len(stats))
 		}
+		if s.throughput > 0 {
+			totalThroughput += s.throughput
+			throughputCount++
+		}
 	}
-
-	if r.percentErr > 20.0 {
-		return false, HighErrorPercent
+	if throughputCount > 0 {
+		r.avgThroughput = totalThroughput / float64(throughputCount)
 	}
-	if r.avgDuration > MaxAvgDuration {
-		return false, LowAvgSpeed
-	}
-	if r.maxDuration > MaxDuration {
-		return false, LowMaxSpeed
-	}
-	if r.minDuration > MinDuration {
-		return false, LowMinSpeed
-	}
-	if len(stats) >= 5 && r.stdDevDuration > MaxStdDevDuration {
-		return false, HighStdDevSpeed
-	}
-	return true, ""
+	return r
 }
 
 func (t *TcpChecker) Run(
@@ -212,11 +230,20 @@ func (t *TcpChecker) Run(
 		default:
 			alive := false
 			reason := types.Reason("")
+			var tcpStats *types.TcpStats
 			downloadStats, err1 := t.tcpCheck(ctx, "download")
 			uploadStats, err2 := t.tcpCheck(ctx, "upload")
 
 			if err1 == nil && err2 == nil {
-				alive, reason = t.checkHealth(append(downloadStats, uploadStats...))
+				allStats := append(downloadStats, uploadStats...)
+				var agg aggResult
+				alive, reason, agg = t.checkHealth(allStats)
+				tcpStats = &types.TcpStats{
+					AvgDuration:           agg.avgDuration,
+					MinDuration:           agg.minDuration,
+					MaxDuration:           agg.maxDuration,
+					ThroughputBytesPerSec: agg.avgThroughput * 1024 * 1024,
+				}
 			}
 
 			var err error
@@ -236,6 +263,7 @@ func (t *TcpChecker) Run(
 				Err:       err,
 				Reason:    reason,
 				Checker:   "tcpcheck",
+				Tcp:       tcpStats,
 			}:
 			case <-ctx.Done():
 				return

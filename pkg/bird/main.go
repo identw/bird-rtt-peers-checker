@@ -6,24 +6,24 @@ import (
 	"fmt"
 	"log"
 	"regexp"
+	"strconv"
 
 	"github.com/identw/bird-rtt-keeper/pkg/birdsocket"
 )
 
-var neighborAddressRegex *regexp.Regexp
-var bgpPeerRegex *regexp.Regexp
-var stateRegex *regexp.Regexp
+var (
+	neighborAddressRegex = regexp.MustCompile(`Neighbor address:\s+(\d{1,3}(?:\.\d{1,3}){3})`)
+	stateRegex           = regexp.MustCompile(`State:\s+UP`)
+	bgpPeerRegex         = regexp.MustCompile(`^\s+([^\s]+)\s+BGP\s.*`)
+	routesRegex          = regexp.MustCompile(`Routes:\s+(\d+)\s+imported,\s+(\d+)\s+exported`)
+)
 
 type BgpPeer struct {
-	Name  string
-	IP    string
-	State bool
-}
-
-func init() {
-	neighborAddressRegex = regexp.MustCompile(`Neighbor address: (\d{1,3}(?:\.\d{1,3}){3})`)
-	stateRegex = regexp.MustCompile(`State:\s+UP`)
-	bgpPeerRegex = regexp.MustCompile(`^\s+([^\s]+)\s+BGP\s.*`)
+	Name             string
+	IP               string
+	State            bool
+	PrefixesImported int
+	PrefixesExported int
 }
 
 type BirdClient struct {
@@ -36,24 +36,40 @@ func NewBirdClient(socketPath string) *BirdClient {
 	}
 }
 
-func (c *BirdClient) GetBgpProtocol(peer string) (string, bool, error) {
+func parseBgpProtocolOutput(show []byte) (BgpPeer, error) {
+	match := neighborAddressRegex.FindSubmatch(show)
+	if match == nil {
+		return BgpPeer{}, fmt.Errorf("no neighbor address found in bird output")
+	}
+
+	peer := BgpPeer{
+		IP:    string(match[1]),
+		State: stateRegex.Match(show),
+	}
+
+	if routesMatch := routesRegex.FindSubmatch(show); routesMatch != nil {
+		peer.PrefixesImported, _ = strconv.Atoi(string(routesMatch[1]))
+		peer.PrefixesExported, _ = strconv.Atoi(string(routesMatch[2]))
+	}
+
+	return peer, nil
+}
+
+func (c *BirdClient) GetBgpProtocol(peer string) (BgpPeer, error) {
 	c.socket.Connect()
 	defer c.socket.Close()
 
 	show, err := c.socket.Query("show protocols all " + peer)
 	if err != nil {
-		return "", false, fmt.Errorf("query bird socket: %w", err)
+		return BgpPeer{}, fmt.Errorf("query bird socket: %w", err)
 	}
-	match := neighborAddressRegex.FindSubmatch(show)
 
-	if match == nil {
-		return "", false, fmt.Errorf("no neighbor address found in bird output")
+	details, err := parseBgpProtocolOutput(show)
+	if err != nil {
+		return BgpPeer{}, err
 	}
-	ip := string(match[1])
-
-	stateMatch := stateRegex.Match(show)
-
-	return ip, stateMatch, nil
+	details.Name = peer
+	return details, nil
 }
 
 func (c *BirdClient) GetProtocols() ([]string, error) {
@@ -106,7 +122,6 @@ func (c *BirdClient) EnableProtocol(peer string) error {
 }
 
 func (c *BirdClient) ReadBgpPeers() ([]BgpPeer, error) {
-
 	peers, err := c.GetProtocols()
 	if err != nil {
 		return nil, fmt.Errorf("get protocols: %w", err)
@@ -114,16 +129,12 @@ func (c *BirdClient) ReadBgpPeers() ([]BgpPeer, error) {
 
 	bgpPeers := make([]BgpPeer, 0, len(peers))
 	for _, peer := range peers {
-		ip, state, err := c.GetBgpProtocol(string(peer))
+		details, err := c.GetBgpProtocol(peer)
 		if err != nil {
 			log.Printf("Error getting BGP protocol for %s: %v", peer, err)
 			continue
 		}
-		bgpPeers = append(bgpPeers, BgpPeer{
-			Name:  string(peer),
-			IP:    ip,
-			State: state,
-		})
+		bgpPeers = append(bgpPeers, details)
 	}
 	return bgpPeers, nil
 }
