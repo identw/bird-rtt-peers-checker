@@ -52,7 +52,7 @@ const (
 
 	timeoutDefaultStr = "20s"
 	sizeDefault       = "10MB"
-	repeatDefault     = 1
+	repeatDefault     = 2
 )
 
 func NewTcpChecker(ip string) *TcpChecker {
@@ -141,7 +141,6 @@ func (t *TcpChecker) tcpCheck(ctx context.Context, operation string) ([]testResu
 			throughput: throughput,
 			err:        testErr,
 		}
-		log.Printf("    Throughput(%s) for %s: %v (%.2f MB/s)\n", operation, t.IP, duration, throughput)
 
 		results = append(results, result)
 
@@ -149,7 +148,7 @@ func (t *TcpChecker) tcpCheck(ctx context.Context, operation string) ([]testResu
 			select {
 			case <-ctx.Done():
 				return results, ctx.Err()
-			case <-time.After(300 * time.Millisecond):
+			case <-time.After(5 * time.Second):
 			}
 		}
 	}

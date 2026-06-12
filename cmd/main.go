@@ -89,14 +89,21 @@ func main() {
 				// log.Printf("Ping check result for %s: alive: %v", healthPeers[result.IP].BgpPeer.Name, result.Alive)
 				hp.IcmpHistory.Record(result.Alive)
 			case "tcpcheck":
-				if ! result.Alive {
+				if !result.Alive {
 					log.Printf("TCP check result for %s: alive: %v, reason: %s", healthPeers[result.IP].BgpPeer.Name, result.Alive, result.Reason)
 				}
 				if tcpcheckEnforce {
+					if !result.Alive {
+						log.Printf("	tcp record for %s: alive: %v, reason: %s", healthPeers[result.IP].BgpPeer.Name, result.Alive, result.Reason)
+					}
 					hp.TcpHistory.Record(result.Alive)
 				} else {
 					hp.TcpHistory.Record(true)
 				}
+			}
+			if !result.Alive {
+				hp.TcpHistory.PrintStats(fmt.Sprintf("TCP stats for %s: ", healthPeers[result.IP].BgpPeer.Name))
+				hp.IcmpHistory.PrintStats(fmt.Sprintf("ICMP stats for %s: ", healthPeers[result.IP].BgpPeer.Name))
 			}
 
 			// Decide whether to disable or enable the peer based on combined state
@@ -267,4 +274,10 @@ func (h *History) LastCheckAlive() bool {
 		return true
 	}
 	return h.LastAlive
+}
+
+func (h *History) PrintStats(prefix string) {
+	log.Printf("%sHistory stats - FailThreshold: %d, SuccessThreshold: %d, ConsecFails: %d, ConsecSuccesses: %d, HasData: %v, LastAlive: %v",
+		prefix, h.FailThreshold, h.SuccessThreshold, h.ConsecFails, h.ConsecSuccesses, h.HasData, h.LastAlive)
+	
 }
